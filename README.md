@@ -72,6 +72,7 @@ streamlit run app.py
 ## 5  Example Output
 
 <!-- Replace with annotated screenshot or animated GIF illustrating a single audit. -->
+*(See the `app test/` folder for working examples and benchmark screenshots.)*
 
 ---
 
@@ -103,4 +104,4 @@ Released under the MIT License.
 
 Built with **Sentence‑Transformers**, **FAISS**, **spaCy**, **PyMuPDF**, **Plotly**, and **Streamlit**.
 
-*(See the `app test/` folder for working examples and benchmark screenshots.)*
+
