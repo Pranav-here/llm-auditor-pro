@@ -2,6 +2,8 @@
 
 A lightweight **Streamlit** application for objectively assessing whether an AI‑generated answer is supported by evidence found in a reference PDF.
 
+🔗 **Live Demo**: [https://llm-auditor-pro.streamlit.app](https://llm-auditor-pro.streamlit.app)
+
 ---
 
 ## 1  Project Scope
