@@ -101,4 +101,4 @@ Released under the MIT License.
 
 Built with **Sentence‑Transformers**, **FAISS**, **spaCy**, **PyMuPDF**, **Plotly**, and **Streamlit**.
 
-*(See the `pics/` folder for working examples and benchmark screenshots.)*
+*(See the `app test/` folder for working examples and benchmark screenshots.)*
