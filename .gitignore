@@ -1,2 +1,40 @@
-/data
-/data/faiss_index
+# Python cache and bytecode
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+
+# Virtual environments
+.venv/
+env/
+venv/
+ENV/
+*.env
+
+# Streamlit temporary files
+.streamlit/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs and outputs
+*.log
+*.out
+
+# VSCode and PyCharm
+.vscode/
+.idea/
+
+# FAISS index folder
+data/faiss_index/
+
+# Streamlit file uploader cache
+uploads/
+.cache/
+
+# Ignore markdown outputs if any
+*.md~
