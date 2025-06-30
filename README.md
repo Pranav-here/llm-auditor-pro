@@ -35,13 +35,14 @@ _A lightning-fast Streamlit app that **audits LLM answers** against trusted sour
 
 ## 🌐  Live links
 
-|  | Version | Link |
-|---|---|---|
+| Version | Link |
+|---|---|
 | 🔹 **MVP (v1)** | <https://ai-knowledge-auditor.streamlit.app/> |
-| 🔸 **Pro (v5.0) – source** | <https://github.com/Pranav-here/llm-auditor-pro> |
+| 🔸 **Pro (v5.0)** | <https://llm-auditor-pro.streamlit.app/> |
 | 🔹 **MVP code** | <https://github.com/Pranav-here/ai-knowledge-auditor> |
+| 🔹 **Pro code** | <https://github.com/Pranav-here/llm-auditor-pro> |
 
-> **Heads‑up:** the public demo runs on free resources, so cold‑starts may take ~20 s.
+> **Heads‑up:** the public demos runs on free resources, so cold‑starts may take ~20 s.
 
 ---
 
