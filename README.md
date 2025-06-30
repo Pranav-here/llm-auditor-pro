@@ -1,107 +1,120 @@
-# AI Knowledge Auditor Pro
+# 🧠 AI Knowledge Auditor Pro (v5.0)
 
-A lightweight **Streamlit** application for objectively assessing whether an AI‑generated answer is supported by evidence found in a reference PDF.
-
-🔗 **Live Demo**: [https://llm-auditor-pro.streamlit.app](https://llm-auditor-pro.streamlit.app)
+_A lightning-fast Streamlit app that **audits LLM answers** against trusted sources and tells you — in seconds — whether to trust, verify, or toss them._
 
 ---
 
-## 1  Project Scope
+## 🚀  What it does
 
-The project implements an end‑to‑end verification pipeline that
-1. **Ingests PDF documents** and performs sentence‑aware chunking;
-2. **Builds a FAISS vector index** using `all‑mpnet‑base‑v2` sentence embeddings;
-3. **Retrieves candidate passages** via a hybrid query that blends the user’s question and the model’s answer;
-4. **Ranks passages** with a cross‑encoder similarity check;
-5. **Calculates a multi‑factor trust score** using four signals:
-   - Semantic similarity
-   - Textual overlap (n‑gram, keyphrase, sequence ratio)
-   - Named‑entity alignment (spaCy NER)
-   - Basic factual consistency (numeric/context agreement)
-6. **Explains the verdict** by highlighting matching sentences and scoring components;
-7. **Aggregates results** in a single‑audit view, a batch processor, and a live analytics dashboard.
-
-All computational steps run locally; no external services are required once the models are downloaded.
+1. **Ingest any PDF** *or* flip to **real-time Web Search mode** when no document is loaded.  
+2. **Chunk & embed** the reference text with Sentence-Transformers (all-mpnet-base-v2) and index it in FAISS for millisecond retrieval.  
+3. Run an **enhanced audit pipeline** that blends  
+   - semantic similarity  
+   - lexical overlap  
+   - named‑entity alignment (spaCy)  
+   - answer‑specificity & completeness heuristics  
+   - retrieval quality  
+4. **Non‑linear calibration** → one intuitive **Trust Score (0–100 %)** with “Trusted / Caution / Suspicious” bands.  
+5. Surface a **highlighted evidence snippet**, a factor‑by‑factor score breakdown, and an optional entity‑level diff.  
+6. **Batch mode & Analytics**: audit thousands of Q‑A pairs at once and track aggregate performance over time.
 
 ---
 
-## 2  Key Features (Implemented)
+## 🏆  Why it’s different
 
-| Module | Description |
-| ------ | ----------- |
-| **Document Loader** | Extracts text from PDFs using *PyMuPDF* (fitz) and cleans layout artifacts. |
-| **Smart Chunker** | Splits text at sentence boundaries; retains configurable overlap for context preservation. |
-| **Vector Store** | Normalised cosine‑similarity index built with **FAISS**; enables millisecond retrieval. |
-| **Hybrid Search** | Weights the question (70 %) and the answer (30 %) to form a single query vector. |
-| **Auditor Core** | Combines retrieval, scoring, explanation generation, and sentence highlighting. |
-| **Batch Processor** | Processes CSV files of Q&A pairs concurrently; outputs a Markdown or CSV report. |
-| **Streamlit UI** | Wide‑layout interface with tabbed navigation, Plotly charts, and adjustable thresholds. |
+| ⚙️ Feature | How it’s done |
+|-----------|---------------|
+| **Hybrid retrieval** | PDF‑backed FAISS *or* Tavily Web Search – same pipeline, no code changes |
+| **Multi‑factor scoring** | Tunable weights + non‑linear scaling curves (`sigmoid`, `power`, `threshold`) |
+| **Entity‑aware** | spaCy `en_core_web_sm` + fuzzy matching boosts factual alignment |
+| **Scale‑ready batch runner** | Threaded executor with graceful error capture and CSV/Markdown export |
+| **Live analytics** | Plotly dashboards (time‑series, distribution, model vs. source comparisons) |
+| **Streamlit UX polish** | Dark‑friendly CSS, metric cards, tabbed workflow, debug sidebar |
 
 ---
 
-## 3  System Architecture
+## 🌐  Live links
 
+|  | Version | Link |
+|---|---|---|
+| 🔹 **MVP (v1)** | <https://ai-knowledge-auditor.streamlit.app/> |
+| 🔸 **Pro (v5.0) – source** | <https://github.com/Pranav-here/llm-auditor-pro> |
+| 🔹 **MVP code** | <https://github.com/Pranav-here/ai-knowledge-auditor> |
+
+> **Heads‑up:** the public demo runs on free resources, so cold‑starts may take ~20 s.
+
+---
+
+## 🧩  High‑level architecture
+```text
+┌──────────┐ ┌──────────────┐
+│  Streamlit Front‑end      │
+│  – tabs (Audit/Batch/…)   │
+└──────┬───┘      │   user inputs
+       ▼
+┌─────────────────────────────┐
+│ smart_chunk_text()          │  PDF ingestion (PyMuPDF) → sentence‑aware chunking
+└──────┬──────────────────────┘
+       ▼ embeddings (Sentence‑Transformers)
+┌─────────────┐    ┌────────────────┐
+│  FAISS idx  │←── │  Tavily Search │  (fallback)
+└──────┬──────┘    └────────────────┘
+       ▼ top‑K chunks
+┌─────────────────────────────┐
+│ enhanced_audit()            │  multi‑factor scoring + calibration
+└──────┬──────────────────────┘
+       ▼
+┌──────────────┐
+│ Trust Score  │ + evidence / report / analytics
+└──────────────┘
 ```
-┌────────────┐      ┌───────────────┐      ┌───────────────┐
-│   PDF in   │──▶──│   Chunker &   │──▶──│   Embeddings   │
-└────────────┘      │  Entity NER   │      └───────────────┘
-        │            └───────────────┘            │
-        ▼                                         ▼
-   FAISS Index  ◀── Hybrid Search ◀──  Question + Answer
-        │                                         │
-        ▼                                         ▼
-Candidate Passages ─▶ Scoring & Highlighting ─▶ Trust Report
-```
 
 ---
 
-## 4  Usage
+## 🔬  Scoring recipe (default **standard** mode)
 
-```bash
-# Launch the application
-streamlit run app.py
-```
+Weight | Metric | How it’s computed
+---|---|---
+0.25 | Semantic similarity | combined (0.7 × question + 0.3 × answer) vs. chunk
+0.20 | Lexical overlap | n‑gram phrase intersection with length‑aware penalty
+0.25 | Entity matching | recall + precision of spaCy entities (fuzzy)
+0.20 | Specificity | numeric / proper‑noun density ratio
+0.10 | Completeness | keyword coverage + length heuristic
 
-1. Upload a PDF (≤ 200 MB).
-2. Enter the question posed to the LLM and the model’s answer.
-3. Review the trust score, highlighted evidence, and factor breakdown.
-4. (Optional) Switch to **Batch Processing** to audit many Q&A pairs at once.
+Raw score → sigmoid scaling → retrieval quality boost ⇒ **Trust Score**.
 
----
-
-## 5  Example Output
-
-<!-- Replace with annotated screenshot or animated GIF illustrating a single audit. -->
-*(See the `app test/` folder for working examples and benchmark screenshots.)*
+Switch to **strict** / **lenient** modes to tweak the weights + curve on the fly.
 
 ---
 
-## 6  Performance Snapshot *(local workstation, RTX 3060)*
+## 🗂  Key modules
 
-| Task | Size | Time |
-| ---- | ---- | ---- |
-| Index build | 200‑page PDF | ≈ 15 s |
-| Single audit | avg. 500 tokens answer | < 4 s |
-| Batch (100 pairs) | same doc | ≈ 70 s |
-
----
-
-## 7  Roadmap
-
-- [ ] Cross‑encoder factuality classifier (planned)
-- [ ] Hugging Face Spaces demo (planned)
-- [ ] Pluggable vector databases (Milvus / Qdrant)
+| Path | Purpose |
+|---|---|
+| `app.py` | Streamlit UI & session orchestration |
+| `core/loader.py` | PDF extraction, smart chunking, entity pull |
+| `core/vector_store.py` | FAISS index helpers + hybrid search |
+| `core/auditor.py` | All scoring logic & explanation generator |
+| `core/websearch.py` | Tavily API wrapper + temp index builder |
+| `core/batch_processor.py` | CSV batch runner, threading, exports |
 
 ---
 
-## 8  License
+## 🛣️  Roadmap
 
-Released under the MIT License.
+- 🏗 **Continuous chat auditing** (no page refresh)  
+- 📦 **Docker & HuggingFace Spaces** deployment  
+- 🔐 **Source‑chain of custody** (hash PDFs, log web snippets)  
+- 🧪 **Unit & fuzz tests** for every scoring sub‑module  
 
 ---
 
-## 9  Acknowledgements
+## 🙏  Acknowledgements
+- **Sentence‑Transformers** – amazing OSS embeddings  
+- **spaCy** – robust NER out‑of‑the‑box  
+- **Tavily Search** – fast, reliable web snippets  
+- Streamlit, Plotly, FAISS, NLTK, PyMuPDF… you make data apps fun.
 
-Built with **Sentence‑Transformers**, **FAISS**, **spaCy**, **PyMuPDF**, **Plotly**, and **Streamlit**.
+---
 
-
+**Made with ☕ and too many tweak cycles by [Pranav Kuchibhotla](https://pranavkuchibhotla.com).**
