@@ -39,7 +39,7 @@ def load_index_and_chunks():
     
     return index, chunks
 
-def hybrid_search(question, answer, embed_model, index, chunks, top_k=5):
+def hybrid_search(question, answer, embed_model, index, chunks, top_k=10):
     """Enhanced search combining question and answer context"""
     
     # Create combined query embedding
