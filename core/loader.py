@@ -32,26 +32,47 @@ def extract_text_from_pdf(file):
         print(f"PDF extraction error: {e}")
         return None
 
-def smart_chunk_text(text, target_size=500, overlap=100):
+def smart_chunk_text(text, target_size=800, overlap=200):
     """Intelligent chunking that respects sentence boundaries"""
     sentences = sent_tokenize(text)
     chunks = []
     current_chunk = ""
     
-    for sentence in sentences:
-        # If adding this sentence exceeds target size and we have content
+    i = 0
+    while i < len(sentences):
+        sentence = sentences[i]
+        
+        # If adding this sentence would exceed target size and we have content
         if len(current_chunk) + len(sentence) > target_size and current_chunk:
             chunks.append(current_chunk.strip())
             
-            # Create overlap by keeping last few sentences
-            overlap_sentences = current_chunk.split('. ')[-2:]  # Keep last 2 sentences
-            current_chunk = '. '.join(overlap_sentences) + '. ' + sentence
+            # Create proper overlap by going back
+            overlap_text = ""
+            overlap_length = 0
+            j = i - 1
+            
+            # Build overlap from previous sentences
+            while j >= 0 and overlap_length < overlap:
+                sent_to_add = sentences[j]
+                if overlap_length + len(sent_to_add) <= overlap:
+                    overlap_text = sent_to_add + " " + overlap_text
+                    overlap_length += len(sent_to_add)
+                    j -= 1
+                else:
+                    break
+            
+            current_chunk = overlap_text + sentence
         else:
-            current_chunk += ' ' + sentence if current_chunk else sentence
+            current_chunk += " " + sentence if current_chunk else sentence
+        
+        i += 1
     
-    # Add final chunk
+    # Add final chunk if it has content
     if current_chunk.strip():
         chunks.append(current_chunk.strip())
+    
+    # Filter out chunks that are too small (less than 50 characters)
+    chunks = [chunk for chunk in chunks if len(chunk) > 50]
     
     return chunks
 
