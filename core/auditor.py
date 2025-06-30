@@ -1,537 +1,588 @@
-# core/auditor.py
+# core/auditor.py - IMPROVED VERSION
 import numpy as np
 from sklearn.metrics.pairwise import cosine_similarity
-from .vector_store import hybrid_search  # Add this import
-from .embedder import load_embedder
+from datetime import datetime
 import re
-from typing import Dict, List, Any, Optional
-from difflib import SequenceMatcher
+from typing import Dict, List, Any, Optional, Tuple
 
-def enhanced_audit(question: str, model_answer: str, embed_model, faiss_index, 
-                  chunk_texts: List[str], ner_model=None, document_entities=None, 
-                  mode='standard') -> Dict[str, Any]:
-    """
-    Enhanced audit function with multi-factor scoring
-    """
-    # Use hybrid search from vector_store.py
-    top_chunks = hybrid_search(question, model_answer, embed_model, faiss_index, chunk_texts, top_k=5)
+# Add this near the top after imports
+TOP_K = 10  # global tweakable constant for chunk retrieval
+
+def extract_key_phrases(text: str, max_phrases: int = 10) -> List[str]:
+    """Extract key phrases from text using simple heuristics"""
+    # Remove common stop words and extract meaningful phrases
+    stop_words = {'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 'is', 'are', 'was', 'were', 'be', 'been', 'being', 'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could', 'should', 'may', 'might', 'must', 'can', 'this', 'that', 'these', 'those'}
     
-    if not top_chunks:
+    # Simple phrase extraction
+    words = re.findall(r'\b[a-zA-Z]{3,}\b', text.lower())
+    phrases = [word for word in words if word not in stop_words]
+    
+    # Return unique phrases
+    return list(dict.fromkeys(phrases))[:max_phrases]
+
+def calculate_semantic_similarity(question: str, answer: str, chunk: str, embed_model) -> float:
+    """Calculate semantic similarity between question+answer and chunk"""
+    try:
+        # Create embeddings
+        question_emb = embed_model.encode([question], convert_to_numpy=True)[0]
+        answer_emb = embed_model.encode([answer], convert_to_numpy=True)[0]
+        chunk_emb = embed_model.encode([chunk], convert_to_numpy=True)[0]
+        
+        # Combined query embedding (weighted towards question)
+        combined_emb = (question_emb * 0.7 + answer_emb * 0.3)  # CHANGED: More weight to answer
+        
+        # Calculate cosine similarity
+        similarity = cosine_similarity([combined_emb], [chunk_emb])[0][0]
+        return float(similarity)
+    except Exception as e:
+        print(f"Error calculating semantic similarity: {e}")
+        return 0.0
+
+def calculate_lexical_overlap(answer: str, chunk: str) -> float:
+    """Calculate improved lexical overlap with length normalization"""
+    try:
+        answer_phrases = set(extract_key_phrases(answer, max_phrases=20))
+        chunk_phrases = set(extract_key_phrases(chunk, max_phrases=50))
+        
+        if not answer_phrases:
+            return 0.0
+        
+        # Basic overlap
+        overlap = len(answer_phrases & chunk_phrases)
+        basic_score = overlap / len(answer_phrases)
+        
+        # CHANGED: More lenient length penalty
+        answer_length = len(answer.split())
+        if answer_length < 5:
+            length_penalty = 0.9  # Less harsh penalty
+        elif answer_length < 10:
+            length_penalty = 0.95
+        else:
+            length_penalty = 1.0
+        
+        # Weighted overlap based on phrase importance
+        weighted_overlap = 0
+        for phrase in answer_phrases:
+            if phrase in chunk_phrases:
+                # CHANGED: More generous weighting
+                weight = min(2.5, len(phrase) / 4.0)  # Higher max weight, lower divisor
+                weighted_overlap += weight
+        
+        if answer_phrases:
+            weighted_score = weighted_overlap / sum(min(2.5, len(p) / 4.0) for p in answer_phrases)
+        else:
+            weighted_score = 0
+        
+        # CHANGED: More balanced combination
+        final_score = (basic_score * 0.5 + weighted_score * 0.5) * length_penalty
+        return min(1.0, final_score)
+        
+    except Exception as e:
+        print(f"Error calculating lexical overlap: {e}")
+        return 0.0
+
+def calculate_answer_specificity(answer: str, chunk: str) -> float:
+    """Calculate how specific/detailed the answer is relative to the source"""
+    try:
+        # CHANGED: More comprehensive specificity indicators
+        answer_specifics = len(re.findall(r'\b\d+\.?\d*\b|\b[A-Z][a-z]+ [A-Z][a-z]+\b|\b\d{4}\b|\b[A-Z]{2,}\b', answer))
+        chunk_specifics = len(re.findall(r'\b\d+\.?\d*\b|\b[A-Z][a-z]+ [A-Z][a-z]+\b|\b\d{4}\b|\b[A-Z]{2,}\b', chunk))
+        
+        if chunk_specifics == 0:
+            return 0.6  # CHANGED: More generous neutral score
+        
+        # Ratio of specific elements
+        specificity_ratio = min(1.0, answer_specifics / chunk_specifics)
+        
+        # CHANGED: Bigger bonus for having specifics
+        if answer_specifics > 0:
+            specificity_ratio += 0.3
+        
+        return min(1.0, specificity_ratio)
+        
+    except Exception as e:
+        return 0.6  # CHANGED: Higher default
+
+def calculate_answer_completeness(answer: str, question: str) -> float:
+    """Estimate how complete the answer is relative to the question"""
+    try:
+        # Simple heuristics for completeness
+        answer_length = len(answer.split())
+        question_words = set(extract_key_phrases(question))
+        answer_words = set(extract_key_phrases(answer))
+        
+        # Check if answer addresses question keywords
+        keyword_coverage = len(question_words & answer_words) / max(1, len(question_words))
+        
+        # CHANGED: More generous length-based completeness
+        if answer_length < 5:
+            length_score = answer_length / 8.0  # Less harsh for short answers
+        elif answer_length < 20:
+            length_score = 0.6 + (answer_length - 5) / 25.0  # Higher base
+        else:
+            length_score = min(1.0, 0.85 + (answer_length - 20) / 80.0)  # Higher ceiling
+        
+        return (keyword_coverage * 0.6 + length_score * 0.4)  # CHANGED: More weight to length
+        
+    except Exception as e:
+        return 0.6  # CHANGED: Higher default
+
+def analyze_entities(answer: str, chunk: str, ner_model=None, document_entities: List = None) -> Dict[str, Any]:
+    """Analyze entity matching between answer and chunk"""
+    entity_analysis = {
+        'answer_entities': [],
+        'chunk_entities': [],
+        'matches': [],
+        'match_ratio': 0.0,
+        'precision': 0.0
+    }
+    
+    if not ner_model:
+        return entity_analysis
+    
+    try:
+        # Extract entities from answer
+        answer_entities = ner_model(answer)
+        if hasattr(answer_entities, 'ents'):
+            entity_analysis['answer_entities'] = [
+                {'text': ent.text, 'label': ent.label_} 
+                for ent in answer_entities.ents
+            ]
+        
+        # Extract entities from chunk
+        chunk_entities = ner_model(chunk)
+        if hasattr(chunk_entities, 'ents'):
+            entity_analysis['chunk_entities'] = [
+                {'text': ent.text, 'label': ent.label_} 
+                for ent in chunk_entities.ents
+            ]
+        
+        # Find matches with more lenient matching
+        answer_entity_texts = {ent['text'].lower() for ent in entity_analysis['answer_entities']}
+        chunk_entity_texts = {ent['text'].lower() for ent in entity_analysis['chunk_entities']}
+        
+        matches = set()
+        for answer_entity in answer_entity_texts:
+            for chunk_entity in chunk_entity_texts:
+                # CHANGED: More lenient fuzzy matching
+                if (answer_entity == chunk_entity or
+                    answer_entity in chunk_entity or chunk_entity in answer_entity or
+                    answer_entity.replace(" ", "").lower() == chunk_entity.replace(" ", "").lower() or
+                    abs(len(answer_entity) - len(chunk_entity)) <= 2 and 
+                    sum(a == b for a, b in zip(answer_entity, chunk_entity)) / max(len(answer_entity), len(chunk_entity)) > 0.8):
+                    matches.add(answer_entity)
+
+        matches = list(matches)
+        entity_analysis['matches'] = list(matches)
+        
+        # Calculate match ratio (recall)
+        if answer_entity_texts:
+            entity_analysis['match_ratio'] = len(matches) / len(answer_entity_texts)
+        
+        # Calculate precision
+        if answer_entity_texts:
+            entity_analysis['precision'] = len(matches) / len(answer_entity_texts)
+        
+    except Exception as e:
+        print(f"Error in entity analysis: {e}")
+    
+    return entity_analysis
+
+def apply_nonlinear_scaling(score: float, curve_type: str = "sigmoid") -> float:
+    """Apply non-linear scaling to make scores more discriminating"""
+    if curve_type == "sigmoid":
+        # CHANGED: Much gentler sigmoid curve
+        return 1 / (1 + np.exp(-5 * (score - 0.4)))  # Less steep, lower threshold
+    elif curve_type == "power":
+        # CHANGED: Less harsh power curve
+        return 0.9 * (score ** 1.05) + 0.2  # Reduced from 1.5
+    elif curve_type == "threshold":
+        # CHANGED: More generous threshold scaling
+        if score < 0.25:  # Lowered from 0.3
+            length_penalty = 0.7  # Less harsh
+        elif score < 0.5:  # Lowered from 0.6
+            return 0.2 + (score - 0.25) * 0.8  # More generous
+        else:
+            return 0.4 + (score - 0.5) * 1.2  # Better rewards
+    else:
+        return score
+
+def enhanced_audit(
+    question: str,
+    model_answer: str,
+    embed_model,
+    faiss_index,
+    chunk_texts: List[str],
+    ner_model=None,
+    document_entities: List = None,
+    mode: str = "standard"
+) -> Dict[str, Any]:
+    """
+    Enhanced audit function with improved calibration
+    """
+    if not question or not model_answer or not chunk_texts:
         return {
             'trust_score': 0,
             'confidence_level': 'Low',
-            'best_chunk': 'No relevant content found',
-            'similarity_score': 0,
-            'explanation': 'No matching content found in the document'
+            'explanation': 'Invalid input parameters',
+            'best_chunk': '',
+            'all_chunks': []
         }
-    
-    # Get the best chunk
-    best_chunk_data = top_chunks[0]
-    best_chunk = best_chunk_data['chunk']
-    similarity_score = best_chunk_data['score'] * 100
-    
-    # Multi-factor scoring with improved logic
-    scores = calculate_multi_factor_score(
-        question, model_answer, best_chunk, embed_model, 
-        ner_model, document_entities, mode, top_chunks
-    )
-    
-    # Calculate final trust score
-    trust_score = calculate_trust_score(scores, mode)
-    
-    # Determine confidence level
-    confidence_level = determine_confidence_level(trust_score, scores)
-    
-    # Generate explanation
-    explanation = generate_explanation(scores, trust_score, mode)
-    
-    # Highlight relevant parts
-    highlighted_chunk = highlight_relevant_content(best_chunk, model_answer, embed_model)
-    
-    result = {
-        'trust_score': int(trust_score),
-        'confidence_level': confidence_level,
-        'best_chunk': best_chunk,
-        'highlighted_chunk': highlighted_chunk,
-        'similarity_score': similarity_score,
-        'explanation': explanation,
-        'score_breakdown': scores,
-        'all_chunks': top_chunks
-    }
-    
-    # Add entity analysis if available
-    if ner_model and document_entities:
-        entity_analysis = analyze_entities(model_answer, document_entities, ner_model)
-        result['entity_analysis'] = entity_analysis
-    
-    return result
-
-def calculate_multi_factor_score(question: str, answer: str, chunk: str, 
-                               embed_model, ner_model=None, document_entities=None, 
-                               mode='standard', all_chunks=None) -> Dict[str, float]:
-    """Calculate multiple scoring factors with improved logic"""
-    
-    scores = {}
-    
-    # 1. Semantic similarity (improved)
-    scores['semantic_similarity'] = calculate_semantic_similarity(answer, chunk, embed_model, all_chunks)
-    
-    # 2. Textual overlap (improved)
-    scores['textual_overlap'] = calculate_improved_textual_overlap(answer, chunk)
-    
-    # 3. Entity matching
-    if ner_model and document_entities:
-        scores['entity_matching'] = calculate_entity_matching(answer, document_entities, ner_model)
-    else:
-        scores['entity_matching'] = 50  # Neutral score when not available
-    
-    # 4. Factual consistency (improved)
-    scores['factual_consistency'] = calculate_improved_factual_consistency(answer, chunk, question)
-    
-    return scores
-
-def calculate_semantic_similarity(answer: str, chunk: str, embed_model, all_chunks=None) -> float:
-    """Improved semantic similarity calculation"""
     
     try:
-        answer_emb = embed_model.encode([answer], convert_to_numpy=True)
+        # Search for relevant chunks
+        from core.vector_store import hybrid_search
+        search_results = hybrid_search(
+        question=question,
+        answer=model_answer,
+        embed_model=embed_model,
+        index=faiss_index,
+        chunks=chunk_texts,
+        top_k=min(TOP_K, len(chunk_texts))
+        )
         
-        # Check similarity with best chunk
-        chunk_emb = embed_model.encode([chunk], convert_to_numpy=True)
-        best_sim = cosine_similarity(answer_emb, chunk_emb)[0][0]
+        if not search_results:
+            return {
+                'trust_score': 0,
+                'confidence_level': 'Low',
+                'explanation': 'No relevant content found',
+                'best_chunk': '',
+                'all_chunks': []
+            }
         
-        # Also check with other top chunks for better coverage
-        if all_chunks and len(all_chunks) > 1:
-            similarities = []
-            for chunk_data in all_chunks[:3]:  # Top 3 chunks
-                try:
-                    chunk_text = chunk_data['chunk']
-                    chunk_emb = embed_model.encode([chunk_text], convert_to_numpy=True)
-                    sim = cosine_similarity(answer_emb, chunk_emb)[0][0]
-                    similarities.append(sim)
-                except:
-                    continue
+        # Analyze all top chunks and aggregate scores
+        chunk_analyses = []
+        total_semantic = 0
+        total_lexical = 0
+        total_specificity = 0
+        total_entity = 0
+        best_entity_analysis = None
+        
+        for i, result in enumerate(search_results):
+            chunk = result['chunk']
+            chunk_semantic = calculate_semantic_similarity(question, model_answer, chunk, embed_model)
+            chunk_lexical = calculate_lexical_overlap(model_answer, chunk)
+            chunk_specificity = calculate_answer_specificity(model_answer, chunk)
+            chunk_entity_analysis = analyze_entities(model_answer, chunk, ner_model, document_entities)
+            chunk_entity_score = (chunk_entity_analysis['match_ratio'] + chunk_entity_analysis['precision']) / 2
             
-            if similarities:
-                # Use the best similarity among top chunks
-                best_sim = max(similarities)
-        
-        # Scale the score more favorably for good matches
-        scaled_score = best_sim * 100
-        
-        # Boost scores that are reasonably good
-        if scaled_score >= 40:
-            scaled_score = min(100, scaled_score * 1.2)
-        
-        return max(0, scaled_score)
-        
-    except Exception:
-        return 0
-
-def calculate_improved_textual_overlap(answer: str, chunk: str) -> float:
-    """Improved textual overlap calculation"""
-    
-    # Multiple approaches to textual similarity
-    
-    # 1. Sequence matching for phrase-level similarity
-    seq_matcher = SequenceMatcher(None, answer.lower(), chunk.lower())
-    sequence_ratio = seq_matcher.ratio() * 100
-    
-    # 2. Word-level overlap (improved)
-    answer_words = set(re.findall(r'\b\w{3,}\b', answer.lower()))  # Only words 3+ chars
-    chunk_words = set(re.findall(r'\b\w{3,}\b', chunk.lower()))
-    
-    if not answer_words:
-        word_overlap = 0
-    else:
-        intersection = len(answer_words.intersection(chunk_words))
-        # Use answer words as base (not union) for better scoring
-        word_overlap = (intersection / len(answer_words)) * 100
-    
-    # 3. N-gram overlap for phrase detection
-    ngram_overlap = calculate_ngram_overlap(answer, chunk)
-    
-    # 4. Key phrase matching
-    key_phrase_score = calculate_key_phrase_matching(answer, chunk)
-    
-    # Combine scores with weights
-    combined_score = (
-        sequence_ratio * 0.2 +
-        word_overlap * 0.3 +
-        ngram_overlap * 0.3 +
-        key_phrase_score * 0.2
-    )
-    
-    return min(100, combined_score)
-
-def calculate_ngram_overlap(answer: str, chunk: str, n=2) -> float:
-    """Calculate n-gram overlap between answer and chunk"""
-    
-    def get_ngrams(text, n):
-        words = re.findall(r'\b\w+\b', text.lower())
-        return set(tuple(words[i:i+n]) for i in range(len(words)-n+1))
-    
-    answer_ngrams = get_ngrams(answer, n)
-    chunk_ngrams = get_ngrams(chunk, n)
-    
-    if not answer_ngrams:
-        return 0
-    
-    intersection = len(answer_ngrams.intersection(chunk_ngrams))
-    return (intersection / len(answer_ngrams)) * 100
-
-def calculate_key_phrase_matching(answer: str, chunk: str) -> float:
-    """Look for key phrases and important terms"""
-    
-    # Extract potential key phrases (2-4 words)
-    answer_phrases = set()
-    chunk_phrases = set()
-    
-    # Get phrases of 2-4 words
-    for n in range(2, 5):
-        answer_words = re.findall(r'\b\w+\b', answer.lower())
-        chunk_words = re.findall(r'\b\w+\b', chunk.lower())
-        
-        for i in range(len(answer_words)-n+1):
-            phrase = ' '.join(answer_words[i:i+n])
-            answer_phrases.add(phrase)
+            # Weight by rank (higher weight for better ranked chunks)
+            weight = 1.0 / (i + 1)
             
-        for i in range(len(chunk_words)-n+1):
-            phrase = ' '.join(chunk_words[i:i+n])
-            chunk_phrases.add(phrase)
-    
-    if not answer_phrases:
-        return 0
-    
-    matches = len(answer_phrases.intersection(chunk_phrases))
-    return (matches / len(answer_phrases)) * 100
-
-def calculate_improved_factual_consistency(answer: str, chunk: str, question: str) -> float:
-    """Improved factual consistency checking"""
-    
-    answer_lower = answer.lower()
-    chunk_lower = chunk.lower()
-    question_lower = question.lower()
-    
-    consistency_score = 100  # Start with perfect consistency
-    penalty = 0
-    
-    # Check for direct contradictions
-    contradictions = [
-        # Yes/No contradictions
-        ('yes' in answer_lower and 'not allowed' in chunk_lower),
-        ('no' in answer_lower and 'required' in chunk_lower),
-        ('allowed' in answer_lower and 'not allowed' in chunk_lower),
-        ('required' in answer_lower and 'optional' in chunk_lower),
-        ('must' in answer_lower and 'optional' in chunk_lower),
-        ('can' in answer_lower and 'cannot' in chunk_lower),
-        ('cannot' in answer_lower and 'can' in chunk_lower and 'cannot' not in chunk_lower),
-    ]
-    
-    # Count actual contradictions
-    for contradiction in contradictions:
-        if contradiction:
-            penalty += 20
-    
-    # Check for numeric contradictions
-    answer_numbers = re.findall(r'\b\d+(?:\.\d+)?\b', answer)
-    chunk_numbers = re.findall(r'\b\d+(?:\.\d+)?\b', chunk)
-    
-    if answer_numbers and chunk_numbers:
-        # Look for contradictory numbers in similar contexts
-        for ans_num in answer_numbers:
-            for chunk_num in chunk_numbers:
-                if abs(float(ans_num) - float(chunk_num)) > 0.1:
-                    # Check if they're in similar context
-                    ans_context = get_number_context(answer, ans_num)
-                    chunk_context = get_number_context(chunk, chunk_num)
-                    
-                    if calculate_context_similarity(ans_context, chunk_context) > 0.5:
-                        penalty += 15
-    
-    # Reduce penalty for ambiguous cases
-    if 'gpa' in question_lower and 'gpa' in chunk_lower:
-        penalty = max(0, penalty - 10)  # GPA questions are often complex
-    
-    return max(0, consistency_score - penalty)
-
-def get_number_context(text: str, number: str) -> str:
-    """Get context around a number"""
-    words = text.split()
-    for i, word in enumerate(words):
-        if number in word:
-            start = max(0, i-3)
-            end = min(len(words), i+4)
-            return ' '.join(words[start:end])
-    return ""
-
-def calculate_context_similarity(context1: str, context2: str) -> float:
-    """Calculate similarity between two contexts"""
-    words1 = set(context1.lower().split())
-    words2 = set(context2.lower().split())
-    
-    if not words1 or not words2:
-        return 0
-    
-    intersection = len(words1.intersection(words2))
-    union = len(words1.union(words2))
-    
-    return intersection / union if union > 0 else 0
-
-def calculate_entity_matching(answer: str, document_entities: List[Dict], ner_model) -> float:
-    """Calculate how well entities in answer match document entities"""
-    
-    try:
-        # Extract entities from answer
-        answer_entities = extract_answer_entities(answer, ner_model)
-        
-        if not answer_entities or not document_entities:
-            return 50  # Neutral score
-        
-        # Count matches
-        doc_entity_texts = [e.get('text', '').lower() for e in document_entities]
-        matches = 0
-        
-        for ans_entity in answer_entities:
-            ans_text = ans_entity.get('text', '').lower()
-            if ans_text in doc_entity_texts:
-                matches += 1
-        
-        if len(answer_entities) == 0:
-            return 50
+            total_semantic += chunk_semantic * weight
+            total_lexical += chunk_lexical * weight
+            total_specificity += chunk_specificity * weight
+            total_entity += chunk_entity_score * weight
             
-        return (matches / len(answer_entities)) * 100
+            chunk_analyses.append({
+                'chunk': chunk,
+                'semantic_score': chunk_semantic,
+                'lexical_score': chunk_lexical,
+                'specificity_score': chunk_specificity,
+                'entity_score': chunk_entity_score,
+                'weight': weight
+            })
+            
+            # Keep the best entity analysis
+            if i == 0 or chunk_entity_score > total_entity:
+                best_entity_analysis = chunk_entity_analysis
         
-    except Exception:
-        return 50
+        # Normalize aggregated scores
+        total_weights = sum(1.0 / (i + 1) for i in range(len(search_results)))
+        semantic_score = total_semantic / total_weights
+        lexical_score = total_lexical / total_weights
+        specificity_score = total_specificity / total_weights
+        entity_score = total_entity / total_weights
+        entity_analysis = best_entity_analysis
+        
+        # Use best chunk for display purposes
+        best_result = search_results[0]
+        best_chunk = best_result['chunk']
+        retrieval_score = best_result['score']
+        completeness_score = calculate_answer_completeness(model_answer, question)
+        
+        # CHANGED: Rebalanced mode-based weighting with higher entity weight
+        if mode == "strict":
+            weights = {
+                'semantic': 0.25,      # Reduced from 0.30
+                'lexical': 0.20,       # Reduced from 0.25
+                'entity': 0.30,        # Increased from 0.20
+                'specificity': 0.10,   # Same
+                'completeness': 0.15   # Same
+            }
+            scaling_curve = "threshold"
+            base_threshold = 0.35  # Lowered from 0.4
+        elif mode == "lenient":
+            weights = {
+                'semantic': 0.25,      # Reduced from 0.40
+                'lexical': 0.10,       # Reduced from 0.20
+                'entity': 0.35,        # Increased from 0.15
+                'specificity': 0.20,   # Increased from 0.15
+                'completeness': 0.10   # Same
+            }
+            scaling_curve = "power"
+            base_threshold = 0.20  # Lowered from 0.25
+        else:  # standard
+            weights = {
+                'semantic': 0.25,      # Reduced from 0.35
+                'lexical': 0.20,       # Reduced from 0.25
+                'entity': 0.25,        # Increased from 0.15
+                'specificity': 0.20,   # Increased from 0.15
+                'completeness': 0.10   # Same
+            }
+            scaling_curve = "sigmoid"
+            base_threshold = 0.30  # Lowered from 0.35
+        
+        # Calculate weighted score
+        raw_score = (
+            semantic_score * weights['semantic'] +
+            lexical_score * weights['lexical'] +
+            entity_score * weights['entity'] +
+            specificity_score * weights['specificity'] +
+            completeness_score * weights['completeness']
+        )
 
-def extract_answer_entities(answer: str, ner_model):
-    """Extract entities from answer text"""
-    try:
-        # This is a simplified version - implement based on your NER model
-        # For now, return empty list
-        return []
-    except Exception:
-        return []
+        # BONUS: Mode-aware boost for strong factual alignment
+        if entity_score > 0.5 and semantic_score > 0.5:
+            if mode == "strict":
+                raw_score += 0.035
+            elif mode == "standard":
+                raw_score += 0.05
+            elif mode == "lenient":
+                raw_score += 0.07
+        elif entity_score > 0.5 and specificity_score > 0.6:
+            if mode == "strict":
+                raw_score += 0.025
+            elif mode == "standard":
+                raw_score += 0.04
+            elif mode == "lenient":
+                raw_score += 0.055
 
-def calculate_trust_score(scores: Dict[str, float], mode: str) -> float:
-    """Calculate final trust score with improved weighting"""
-    
-    # Improved weights based on mode
-    if mode == 'strict':
-        weights = {
-            'semantic_similarity': 0.35,
-            'textual_overlap': 0.35,
-            'entity_matching': 0.15,
-            'factual_consistency': 0.15
+
+
+        
+        # Apply non-linear scaling for better discrimination
+        scaled_score = apply_nonlinear_scaling(raw_score, scaling_curve)
+        
+        # CHANGED: More generous retrieval quality adjustment
+        if retrieval_score > 0.7:  # Lowered threshold
+            retrieval_boost = 0.08  # Increased boost
+        elif retrieval_score > 0.5:  # Lowered threshold
+            retrieval_boost = 0.05  # Increased boost
+        else:
+            retrieval_boost = 0.02  # Small boost even for lower scores
+        
+        # Final trust score with adjusted thresholds
+        trust_score = min(100, max(0, (scaled_score + retrieval_boost) * 100))
+        
+        # CHANGED: More balanced confidence levels
+        if trust_score >= 80:  # Lowered from 85
+            confidence_level = 'Very High'
+        elif trust_score >= 65:  # Lowered from 70
+            confidence_level = 'High'
+        elif trust_score >= 45:  # Lowered from 50
+            confidence_level = 'Medium'
+        elif trust_score >= 25:  # Lowered from 30
+            confidence_level = 'Low'
+        else:
+            confidence_level = 'Very Low'
+        
+        # Generate explanation
+        explanation = generate_explanation(
+            trust_score=trust_score,
+            semantic_score=semantic_score,
+            lexical_score=lexical_score,
+            entity_score=entity_score,
+            specificity_score=specificity_score,
+            completeness_score=completeness_score,
+            entity_analysis=entity_analysis,
+            mode=mode
+        )
+        
+        # Prepare detailed results
+        result = {
+            'trust_score': round(trust_score, 1),
+            'confidence_level': confidence_level,
+            'explanation': explanation,
+            'best_chunk': best_chunk,
+            'highlighted_chunk': highlight_relevant_parts(best_chunk, model_answer),
+            'all_chunks': search_results,
+            'score_breakdown': {
+                'Semantic Similarity': round(semantic_score * 100, 1),
+                'Lexical Overlap': round(lexical_score * 100, 1),
+                'Entity Matching': round(entity_score * 100, 1),
+                'Answer Specificity': round(specificity_score * 100, 1),
+                'Answer Completeness': round(completeness_score * 100, 1),
+                'Retrieval Quality': round(retrieval_score * 100, 1)
+            },
+            'entity_analysis': entity_analysis,
+            'metadata': {
+                'mode': mode,
+                'timestamp': datetime.now().isoformat(),
+                'chunks_analyzed': len(search_results),
+                'weights_used': weights,
+                'raw_score': round(raw_score, 3),
+                'scaled_score': round(scaled_score, 3)
+            }
         }
-        base_threshold = 0.85
-    elif mode == 'lenient':
-        weights = {
-            'semantic_similarity': 0.45,
-            'textual_overlap': 0.30,
-            'entity_matching': 0.10,
-            'factual_consistency': 0.15
+        
+        return result
+        
+    except Exception as e:
+        print(f"Error in enhanced_audit: {e}")
+        return {
+            'trust_score': 0,
+            'confidence_level': 'Error',
+            'explanation': f'Error during audit: {str(e)}',
+            'best_chunk': '',
+            'all_chunks': []
         }
-        base_threshold = 0.75
-    else:  # standard
-        weights = {
-            'semantic_similarity': 0.40,
-            'textual_overlap': 0.35,
-            'entity_matching': 0.12,
-            'factual_consistency': 0.13
-        }
-        base_threshold = 0.80
-    
-    # Calculate weighted score
-    trust_score = sum(scores.get(factor, 0) * weight 
-                     for factor, weight in weights.items())
-    
-    # Apply intelligent adjustments based on score patterns
-    semantic_score = scores.get('semantic_similarity', 0)
-    textual_score = scores.get('textual_overlap', 0)
-    factual_score = scores.get('factual_consistency', 0)
-    
-    # Boost score if both semantic and factual consistency are good
-    if semantic_score >= 50 and factual_score >= 80:
-        trust_score = min(100, trust_score * 1.15)
-    
-    # Boost score if textual overlap is very high (direct quotes/paraphrases)
-    if textual_score >= 60:
-        trust_score = min(100, trust_score * 1.10)
-    
-    # Penalty for factual inconsistencies
-    if factual_score < 60:
-        trust_score *= 0.85
-    
-    # Mode-specific final adjustments (more reasonable)
-    if mode == 'strict':
-        trust_score *= 0.95  # Slightly more conservative
-    elif mode == 'lenient':
-        trust_score = min(100, trust_score * 1.05)  # Slightly more generous
-    
-    return max(0, min(100, trust_score))
 
-def determine_confidence_level(trust_score: float, scores: Dict[str, float]) -> str:
-    """Determine confidence level with improved thresholds"""
-    
-    # Check score consistency
-    score_values = [v for v in scores.values() if v > 0]
-    if len(score_values) > 1:
-        score_std = np.std(score_values)
-        if score_std > 35:  # Very high variance
-            return 'Low'
-    
-    # Improved thresholds
-    if trust_score >= 75:
-        return 'High'
-    elif trust_score >= 55:
-        return 'Medium'
-    else:
-        return 'Low'
-
-def generate_explanation(scores: Dict[str, float], trust_score: float, mode: str) -> str:
-    """Generate explanation for the trust score"""
+def generate_explanation(
+    trust_score: float,
+    semantic_score: float,
+    lexical_score: float,
+    entity_score: float,
+    specificity_score: float,
+    completeness_score: float,
+    entity_analysis: Dict,
+    mode: str
+) -> str:
+    """Generate human-readable explanation of the audit results"""
     
     explanations = []
     
-    # Semantic similarity
-    sem_score = scores.get('semantic_similarity', 0)
-    if sem_score >= 70:
-        explanations.append("Strong semantic similarity with document content")
-    elif sem_score >= 45:
-        explanations.append("Moderate semantic similarity with document content")
+    # CHANGED: More balanced overall assessment
+    if trust_score >= 80:  # Lowered thresholds
+        explanations.append("✅ **Very High Trust**: The answer is strongly supported by the source content with high confidence.")
+    elif trust_score >= 65:
+        explanations.append("✅ **High Trust**: The answer appears well-supported by the available content.")
+    elif trust_score >= 45:
+        explanations.append("⚠️ **Medium Trust**: The answer has reasonable support and appears generally reliable.")
+    elif trust_score >= 25:
+        explanations.append("⚠️ **Low Trust**: The answer has limited support from the available content.")
     else:
-        explanations.append("Low semantic similarity with document content")
+        explanations.append("❌ **Very Low Trust**: The answer appears to have minimal support from the source.")
     
-    # Textual overlap
-    text_score = scores.get('textual_overlap', 0)
-    if text_score >= 50:
-        explanations.append("Good textual overlap with source material")
-    elif text_score >= 25:
-        explanations.append("Some textual overlap with source material")
+    # CHANGED: More generous score thresholds
+    high_scores = []
+    low_scores = []
+    
+    if semantic_score > 0.6:  # Lowered from 0.7
+        high_scores.append(f"strong semantic alignment ({semantic_score:.2f})")
+    elif semantic_score < 0.35:  # Lowered from 0.4
+        low_scores.append(f"weak semantic similarity ({semantic_score:.2f})")
+    
+    if lexical_score > 0.5:  # Lowered from 0.6
+        high_scores.append(f"good lexical overlap ({lexical_score:.1%})")
+    elif lexical_score < 0.25:  # Lowered from 0.3
+        low_scores.append(f"low lexical overlap ({lexical_score:.1%})")
+    
+    if specificity_score > 0.6:  # Lowered from 0.7
+        high_scores.append("good specificity")
+    elif specificity_score < 0.35:  # Lowered from 0.4
+        low_scores.append("lacks specificity")
+    
+    if completeness_score > 0.6:  # Lowered from 0.7
+        high_scores.append("comprehensive coverage")
+    elif completeness_score < 0.35:  # Lowered from 0.4
+        low_scores.append("incomplete answer")
+    
+    # CHANGED: Give more credit to entity matching
+    if entity_score > 0.4:  # New condition
+        high_scores.append("strong entity alignment")
+    
+    if high_scores:
+        explanations.append(f"Strengths: {', '.join(high_scores)}.")
+    
+    if low_scores:
+        explanations.append(f"Concerns: {', '.join(low_scores)}.")
+    
+    # Entity analysis
+    if entity_analysis['matches']:
+        explanations.append(f"Found {len(entity_analysis['matches'])} matching entities, indicating factual alignment.")
     else:
-        explanations.append("Limited textual overlap with source material")
+        explanations.append("No matching entities found, which may indicate divergent content.")
     
-    # Entity matching
-    entity_score = scores.get('entity_matching', 50)
-    if entity_score >= 70:
-        explanations.append("Mentioned entities align well with document")
-    elif entity_score >= 40:
-        explanations.append("Some entity alignment with document")
-    else:
-        explanations.append("Limited entity alignment with document")
-    
-    # Overall assessment with improved thresholds
-    if trust_score >= 75:
-        overall = "The answer appears to be well-supported by the document."
-    elif trust_score >= 55:
-        overall = "The answer has moderate support from the document."
-    elif trust_score >= 35:
-        overall = "The answer has limited support from the document."
-    else:
-        overall = "The answer appears to have little support from the document."
-    
-    return f"{overall} " + " ".join(explanations)
+    return " ".join(explanations)
 
-def highlight_relevant_content(chunk: str, answer: str, embed_model) -> str:
-    """Highlight relevant parts of the chunk"""
-    
-    # Simple approach: highlight sentences with high similarity
-    sentences = re.split(r'[.!?]+', chunk)
-    
-    if len(sentences) <= 1:
-        return chunk
-    
+def highlight_relevant_parts(chunk: str, answer: str) -> str:
+    """Highlight parts of the chunk that are relevant to the answer"""
     try:
-        answer_emb = embed_model.encode([answer], convert_to_numpy=True)[0]
+        answer_phrases = extract_key_phrases(answer)
+        highlighted_chunk = chunk
         
-        highlighted_sentences = []
-        for sentence in sentences:
-            sentence = sentence.strip()
-            if len(sentence) < 10:  # Skip very short sentences
-                highlighted_sentences.append(sentence)
-                continue
-                
-            try:
-                sent_emb = embed_model.encode([sentence], convert_to_numpy=True)[0]
-                similarity = cosine_similarity([answer_emb], [sent_emb])[0][0]
-                
-                if similarity >= 0.4:  # Lower threshold for highlighting
-                    highlighted_sentences.append(f"**{sentence}**")
-                else:
-                    highlighted_sentences.append(sentence)
-            except Exception:
-                highlighted_sentences.append(sentence)
+        for phrase in answer_phrases[:5]:  # Limit to top 5 phrases
+            if len(phrase) > 3:
+                # Case-insensitive replacement with highlighting
+                pattern = re.compile(re.escape(phrase), re.IGNORECASE)
+                highlighted_chunk = pattern.sub(f"**{phrase}**", highlighted_chunk)
         
-        return ". ".join(highlighted_sentences)
-        
-    except Exception:
+        return highlighted_chunk
+    except:
         return chunk
-
-def analyze_entities(answer: str, document_entities: List[Dict], ner_model) -> Dict[str, Any]:
-    """Analyze entity matching between answer and document"""
-    
-    try:
-        # Extract entities from answer
-        answer_entities = extract_answer_entities(answer, ner_model)
-        
-        # Find matches
-        doc_entity_texts = [e.get('text', '').lower() for e in document_entities]
-        matches = []
-        
-        for ans_entity in answer_entities:
-            ans_text = ans_entity.get('text', '').lower()
-            if ans_text in doc_entity_texts:
-                matches.append(ans_text)
-        
-        return {
-            'answer_entities': answer_entities,
-            'document_entities': document_entities[:10],  # Limit for display
-            'matches': matches,
-            'match_ratio': len(matches) / max(1, len(answer_entities))
-        }
-        
-    except Exception:
-        return {
-            'answer_entities': [],
-            'document_entities': [],
-            'matches': [],
-            'match_ratio': 0
-        }
 
 def generate_detailed_report(audit_result: Dict[str, Any]) -> str:
-    """Generate a detailed markdown report"""
+    """Generate a detailed markdown report of the audit results"""
     
-    report = f"""# Audit Report
-
-## Overall Assessment
-- **Trust Score:** {audit_result['trust_score']}%
-- **Confidence Level:** {audit_result['confidence_level']}
-- **Similarity Score:** {audit_result.get('similarity_score', 0):.1f}%
-
-## Score Breakdown
-"""
+    report_lines = [
+        "## 📋 Detailed Audit Report",
+        f"**Generated:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+        "",
+        "### 📊 Overall Assessment",
+        f"- **Trust Score:** {audit_result['trust_score']}%",
+        f"- **Confidence Level:** {audit_result['confidence_level']}",
+        f"- **Audit Mode:** {audit_result.get('metadata', {}).get('mode', 'standard').title()}",
+        ""
+    ]
     
+    # Score breakdown
     if 'score_breakdown' in audit_result:
-        for factor, score in audit_result['score_breakdown'].items():
-            report += f"- **{factor.replace('_', ' ').title()}:** {score:.1f}%\n"
+        report_lines.extend([
+            "### 📈 Score Breakdown",
+            ""
+        ])
+        for metric, score in audit_result['score_breakdown'].items():
+            report_lines.append(f"- **{metric}:** {score}%")
+        report_lines.append("")
     
-    report += f"""
-## Analysis
-{audit_result.get('explanation', 'No explanation available')}
-
-## Most Relevant Content
-{audit_result.get('best_chunk', 'No relevant content found')}
-"""
+    # Technical details
+    metadata = audit_result.get('metadata', {})
+    if 'raw_score' in metadata:
+        report_lines.extend([
+            "### 🔧 Calibration Details",
+            f"- **Raw Score:** {metadata['raw_score']}",
+            f"- **Scaled Score:** {metadata['scaled_score']}",
+            f"- **Final Trust Score:** {audit_result['trust_score']}%",
+            ""
+        ])
     
+    # Entity analysis
     if 'entity_analysis' in audit_result:
         entity_data = audit_result['entity_analysis']
-        report += f"""
-## Entity Analysis
-- **Entities in Answer:** {len(entity_data.get('answer_entities', []))}
-- **Matching Entities:** {len(entity_data.get('matches', []))}
-- **Match Ratio:** {entity_data.get('match_ratio', 0):.2%}
-"""
+        report_lines.extend([
+            "### 🏷️ Entity Analysis",
+            f"- **Entities in Answer:** {len(entity_data.get('answer_entities', []))}",
+            f"- **Matching Entities:** {len(entity_data.get('matches', []))}",
+            f"- **Entity Recall:** {entity_data.get('match_ratio', 0):.1%}",
+            f"- **Entity Precision:** {entity_data.get('precision', 0):.1%}",
+            ""
+        ])
+        
+        if entity_data.get('matches'):
+            report_lines.append("**Matched Entities:**")
+            for match in entity_data['matches']:
+                report_lines.append(f"- {match}")
+            report_lines.append("")
     
-    return report
+    # Source content
+    report_lines.extend([
+        "### 📖 Most Relevant Source Content",
+        audit_result.get('best_chunk', 'No content available'),
+        "",
+        "### 📝 Analysis Summary",
+        audit_result.get('explanation', 'No explanation available'),
+        ""
+    ])
+    
+    return "\n".join(report_lines)
