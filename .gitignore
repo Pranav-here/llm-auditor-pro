@@ -1,1 +1,55 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.pyd
+*.pyo
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+*.manifest
+*.spec
+
+# ---- Environments ----
 .env
+.venv/
+venv/
+env/
+pip-wheel-metadata/
+site/
+
+# ---- Jupyter & notebooks ----
+.ipynb_checkpoints/
+*.ipynb
+
+# ---- Editors & IDEs ----
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ---- Streamlit ----
+.streamlit/secrets.toml
+.streamlit/config.toml
+
+# ---- Data & cache ----
+data/
+cache/
+logs/
+*.log
+*.csv
+*.tsv
+*.parquet
+*.json
+*.db
+*.sqlite
+data/faiss_index/
+*.index
+*.pkl
+models/
+*.bin
+
+# ---- OS / misc ----
+.DS_Store
+Thumbs.db
